@@ -208,6 +208,7 @@ exports.Block = class Block extends Base
   # return the result, and it's an expression, simply return it. If it's a
   # statement, ask the statement to do so.
   compileNode: (o) ->
+    console.log("Block")
     @tab  = o.indent
     top   = o.level is LEVEL_TOP
     codes = []
@@ -233,7 +234,8 @@ exports.Block = class Block extends Base
     o.scope  = new Scope null, this, null
     o.level  = LEVEL_TOP
     code     = @compileWithDeclarations o
-    if o.bare then code else "(function() {\n#{code}\n}).call(this);\n"
+    if o.bare then code else
+      return "use constant true => 1;\ndo {\n#{code}\n};\n"  # rr
 
   # Compile the expressions body for the contents of a function, with
   # declarations of all inner variables pushed up to the top.
@@ -255,9 +257,9 @@ exports.Block = class Block extends Base
       if (declars or assigns) and i
         code += '\n'
       if declars
-        code += "#{@tab}var #{ scope.declaredVariables().join(', ') };\n"
+        code += "#{@tab}my ( $#{ scope.declaredVariables().join(', $') } );\n"  # rr
       if assigns
-        code += "#{@tab}var #{ multident scope.assignedVariables().join(', '), @tab };\n"
+        code += "#{@tab}my ( $#{ multident scope.assignedVariables().join(', $'), @tab };\n"
     code + post
 
   # Wrap up the given nodes as an **Block**, unless it already happens
@@ -281,7 +283,7 @@ exports.Literal = class Literal extends Base
     IDENTIFIER.test @value
 
   isStatement: ->
-    @value in ['break', 'continue', 'debugger']
+    @value in ['last', 'next', 'debugger']
 
   isComplex: NO
 
@@ -293,12 +295,14 @@ exports.Literal = class Literal extends Base
     if not (o and (o.loop or o.block and (@value isnt 'continue'))) then this else no
 
   compileNode: (o) ->
+    console.log("Literal")
     code = if @isUndefined
       if o.level >= LEVEL_ACCESS then '(void 0)' else 'void 0'
     else if @value.reserved
       "\"#{@value}\""
     else
       @value
+    console.log ">>>>>>> #{code} + #{@isAssignable()}"
     if @isStatement() then "#{@tab}#{code};" else code
 
   toString: ->
@@ -323,6 +327,7 @@ exports.Return = class Return extends Base
     if expr and expr not instanceof Return then expr.compile o, level else super o, level
 
   compileNode: (o) ->
+    console.log("Return")
     @tab + "return#{ if @expression then ' ' + @expression.compile(o, LEVEL_PAREN) else '' };"
 
 #### Value
@@ -399,10 +404,11 @@ exports.Value = class Value extends Base
   # operators `?.` interspersed. Then we have to take care not to accidentally
   # evaluate anything twice when building the soak chain.
   compileNode: (o) ->
+    console.log("Value =" + @base.compile( o ) + ", isAssignable=" + @isAssignable() )
     @base.front = @front
     props = @properties
     code  = @base.compile o, if props.length then LEVEL_ACCESS else null
-    code  = "#{code}." if (@base instanceof Parens or props.length) and SIMPLENUM.test code
+    code  = "#{code}->" if (@base instanceof Parens or props.length) and SIMPLENUM.test code  # rr
     code += prop.compile o for prop in props
     code
 
@@ -533,7 +539,7 @@ exports.Call = class Call extends Base
     if @isSuper
       @superReference(o) + ".call(this#{ args and ', ' + args })"
     else
-      (if @isNew then 'new ' else '') + @variable.compile(o, LEVEL_ACCESS) + "(#{args})"
+      (if @isNew then 'new ' else '') + @variable.compile(o, LEVEL_ACCESS) + ( if @variable.base then '' else '->' ) + "(#{args})" # rr
 
   # `super()` is converted into a call against the superclass's implementation
   # of the current function.
@@ -598,7 +604,7 @@ exports.Access = class Access extends Base
 
   compile: (o) ->
     name = @name.compile o
-    @proto + if IDENTIFIER.test name then ".#{name}" else "[#{name}]"
+    @proto + if IDENTIFIER.test name then "->#{name}" else "[#{name}]"
 
   isComplex: NO
 
@@ -642,6 +648,7 @@ exports.Range = class Range extends Base
   # When compiled normally, the range returns the contents of the *for loop*
   # needed to iterate over the values in the range. Used by comprehensions.
   compileNode: (o) ->
+    console.log("Range")
     @compileVariables o unless @fromVar
     return @compileArray(o) unless o.index
 
@@ -692,10 +699,10 @@ exports.Range = class Range extends Base
       vars    = "#{i} = #{@fromC}" + if @toC isnt @toVar then ", #{@toC}" else ''
       cond    = "#{@fromVar} <= #{@toVar}"
       body    = "var #{vars}; #{cond} ? #{i} <#{@equals} #{@toVar} : #{i} >#{@equals} #{@toVar}; #{cond} ? #{i}++ : #{i}--"
-    post   = "{ #{result}.push(#{i}); }\n#{idt}return #{result};\n#{o.indent}"
+    post   = "{ #{result}->push(#{i}); }\n#{idt}return #{result};\n#{o.indent}"
     hasArgs = (node) -> node?.contains (n) -> n instanceof Literal and n.value is 'arguments' and not n.asKey
     args   = ', arguments' if hasArgs(@from) or hasArgs(@to)
-    "(function() {#{pre}\n#{idt}for (#{body})#{post}}).apply(this#{args ? ''})"
+    "(sub {#{pre}\n#{idt}for (#{body})#{post}}).apply(this#{args ? ''})"
 
 #### Slice
 
@@ -735,6 +742,7 @@ exports.Obj = class Obj extends Base
   children: ['properties']
 
   compileNode: (o) ->
+    console.log("Objs")
     props = @properties
     return (if @front then '({})' else '{}') unless props.length
     if @generated
@@ -938,8 +946,8 @@ exports.Assign = class Assign extends Base
       @value.klass = match[1] if match[1]
       @value.name  = match[2] ? match[3] ? match[4] ? match[5]
     val = @value.compile o, LEVEL_LIST
-    return "#{name}: #{val}" if @context is 'object'
-    val = name + " #{ @context or '=' } " + val
+    return "#{name}=> #{val}" if @context is 'object'
+    val = '$' + name + " #{ @context or '=' } " + val   # xx = 10  rr
     if o.level <= LEVEL_LIST then val else "(#{val})"
 
   # Brief implementation of recursive pattern matching, when assigning array or
@@ -1094,9 +1102,9 @@ exports.Code = class Code extends Base
     o.scope.parameter vars[i] = v.compile o for v, i in vars unless splats
     @body.makeReturn() unless wasEmpty or @noReturn
     idt   = o.indent
-    code  = 'function'
+    code  = "sub {"
     code  += ' ' + @name if @ctor
-    code  += '(' + vars.join(', ') + ') {'
+    code  += " my ( $" + vars.join(', $') + ' )=@_;' if vars.length  # rr
     code  += "\n#{ @body.compileWithDeclarations o }\n#{@tab}" unless @body.isEmpty()
     code  += '}'
     return @tab + code if @ctor
@@ -1119,6 +1127,7 @@ exports.Param = class Param extends Base
   children: ['name', 'value']
 
   compile: (o) ->
+    console.log "Param"
     @name.compile o, LEVEL_LIST
 
   asReference: (o) ->
@@ -1153,6 +1162,7 @@ exports.Splat = class Splat extends Base
     @name.assigns name
 
   compile: (o) ->
+    console.log "Splat"
     if @index? then @compileParam o else @name.compile o
 
   # Utility function that converts arbitrary number of elements, mixed with
@@ -1301,6 +1311,7 @@ exports.Op = class Op extends Base
     @operator in ['++', '--', 'delete'] and unfoldSoak o, this, 'first'
 
   compileNode: (o) ->
+    console.log("Op")
     return @compileUnary     o if @isUnary()
     return @compileChain     o if @isChainable() and @first.isChainable()
     return @compileExistence o if @operator is '?'
@@ -1351,6 +1362,7 @@ exports.In = class In extends Base
   invert: NEGATE
 
   compileNode: (o) ->
+    console.log("In")
     if @array instanceof Value and @array.isArray()
       for obj in @array.base.objects when obj instanceof Splat
         hasSplat = yes
@@ -1361,7 +1373,7 @@ exports.In = class In extends Base
 
   compileOrTest: (o) ->
     [sub, ref] = @object.cache o, LEVEL_OP
-    [cmp, cnj] = if @negated then [' !== ', ' && '] else [' === ', ' || ']
+    [cmp, cnj] = if @negated then [' !== ', ' && '] else [' == ', ' || ']
     tests = for item, i in @array.base.objects
       (if i then ref else sub) + cmp + item.compile o, LEVEL_OP
     return 'false' if tests.length is 0
@@ -1399,14 +1411,15 @@ exports.Try = class Try extends Base
   # Compilation is more or less as you would expect -- the *finally* clause
   # is optional, the *catch* is not.
   compileNode: (o) ->
+    console.log("Try")
     o.indent  += TAB
     errorPart = if @error then " (#{ @error.compile o }) " else ' '
     catchPart = if @recovery
       " catch#{errorPart}{\n#{ @recovery.compile o, LEVEL_TOP }\n#{@tab}}"
     else unless @ensure or @recovery
-      ' catch (_e) {}'
+      ' if ($@) {}'
     """
-    #{@tab}try {
+    #{@tab}eval {
     #{ @attempt.compile o, LEVEL_TOP }
     #{@tab}}#{ catchPart or '' }
     """ + if @ensure then " finally {\n#{ @ensure.compile o, LEVEL_TOP }\n#{@tab}}" else ''
@@ -1441,6 +1454,7 @@ exports.Existence = class Existence extends Base
   invert: NEGATE
 
   compileNode: (o) ->
+    console.log("Existence")
     code = @expression.compile o, LEVEL_OP
     code = if IDENTIFIER.test(code) and not o.scope.check code
         [cmp, cnj] = if @negated then ['===', '||'] else ['!==', '&&']
@@ -1467,6 +1481,7 @@ exports.Parens = class Parens extends Base
   makeReturn: -> @body.makeReturn()
 
   compileNode: (o) ->
+    console.log("Parens")
     expr = @body.unwrap()
     if expr instanceof Value and expr.isAtomic()
       expr.front = @front
@@ -1514,6 +1529,7 @@ exports.For = class For extends Base
   # comprehensions. Some of the generated code can be shared in common, and
   # some cannot.
   compileNode: (o) ->
+    console.log("For")
     body      = Block.wrap [@body]
     lastJumps = last(body.expressions)?.jumps()
     @returns  = no if lastJumps and lastJumps instanceof Return
@@ -1525,6 +1541,8 @@ exports.For = class For extends Base
     scope.find(index, immediate: yes) if index
     rvar      = scope.freeVariable 'results' if @returns
     ivar      = (if @range then name else index) or scope.freeVariable 'i'
+    ivar      = "$#{ivar}" # rr
+    rvar      = "$#{rvar}" # rr
     # the `_by` variable is created twice in `Range`s if we don't prevent it from being declared here
     stepvar   = scope.freeVariable "step" if @step and not @range
     name      = ivar if @pattern
@@ -1618,7 +1636,7 @@ exports.Switch = class Switch extends Base
       break if i is @cases.length - 1 and not @otherwise
       expr = @lastNonComment block.expressions
       continue if expr instanceof Return or (expr instanceof Literal and expr.jumps() and expr.value isnt 'debugger')
-      code += idt2 + 'break;\n'
+      code += idt2 + 'last;\n'
     code += idt1 + "default:\n#{ @otherwise.compile o, LEVEL_TOP }\n" if @otherwise and @otherwise.expressions.length
     code +  @tab + '}'
 
@@ -1708,6 +1726,8 @@ exports.If = class If extends Base
 # Faux-nodes are never created by the grammar, but are used during code
 # generation to generate other combinations of nodes.
 
+#DeRefArr =  #rr wrap: (name) -> "@{ #{name} || [] }"
+
 #### Push
 
 # The **Push** creates the tree for `array.push(value)`,
@@ -1715,7 +1735,13 @@ exports.If = class If extends Base
 Push =
   wrap: (name, exps) ->
     return exps if exps.isEmpty() or last(exps.expressions).jumps()
-    exps.push new Call new Value(new Literal(name), [new Access new Literal 'push']), [exps.pop()]
+    exps.push new Call new Value(new Literal 'push' ), [new DeRefArr( name ), exps.pop()]
+
+exports.DeRefArr = class DeRefArr extends Base
+  constructor: (@value) ->
+
+  compileNode: (o) ->
+    "@{ #{@value} || [] }"
 
 #### Closure
 

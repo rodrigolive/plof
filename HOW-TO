@@ -1,0 +1,2 @@
+bin/cake build ; bin/coffee -c p1.co ; cat p1.js; git checkout lib ; perl p1.js
+

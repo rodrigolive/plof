@@ -1,0 +1,10 @@
+square = (x) -> 10 #x * x
+xx = 10 if true
+hh = 
+  aa: 11
+  bb: 12
+xx = for i in [1..10]
+  i + 2
+
+try say "hello"
+# print map () -> xx; square 2
